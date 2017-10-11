@@ -12,6 +12,8 @@ global MAX_AGE
 MAX_AGE = int(os.getenv("MAX_AGE", 60)) * 60  # minutes (convert to sec)
 global MAX_RESTART
 MAX_RESTART = int(os.getenv("MAX_RESTART", 20))
+global DRYRUN
+DRYRUN = os.getenv("DRYRUN", False) == "True" or os.getenv("DRYRUN", False) == "true"
 global AWS_REGION
 AWS_REGION = urllib.request.urlopen("http://169.254.169.254/latest/meta-data/placement/availability-zone").read()[:-1]
 
@@ -41,8 +43,11 @@ def is_ok_to_touch(pod):
 
 
 def annotate_pod(pod):
-    pod.metadata.annotations[ANNOTATION_KEY] = current_time.datetime
-    pod = v1.patch_namespaced_pod(name=pod.metadata.name, namespace=pod.metadata.namespace, body=pod)
+    if DRYRUN:
+        print("DRYRUN: skipping annotate_pod step")
+    else:
+        pod.metadata.annotations[ANNOTATION_KEY] = current_time.datetime
+        pod = v1.patch_namespaced_pod(name=pod.metadata.name, namespace=pod.metadata.namespace, body=pod)
 
 
 def detach_volume(pod):
@@ -53,7 +58,10 @@ def detach_volume(pod):
     global ec2
     if not ec2:
         ec2 = boto3.client(service_name="ec2", region_name=AWS_REGION)
-    ec2.detach_volume(VolumeId=volume_id, Force=True)
+    if DRYRUN:
+        print("DRYRUN: skipping detach_volume step")
+    else:
+        ec2.detach_volume(VolumeId=volume_id, Force=True)
     annotate_pod(pod)
 
 
@@ -65,8 +73,16 @@ def find_pvc(pod):
 
 
 def evict_pod(pod):
-    body = v1.client.V1beta1Eviction(metadata=pod.metadata)
-    v1.create_namespaced_pod_eviction(name="{}-eviction".format(pod.metadata.name), namespace=pod.metadata.namespace, body=body)
+    delete_options = client.V1DeleteOptions(grace_period_seconds=30)
+    eviction = client.V1beta1Eviction(delete_options=delete_options, metadata=pod.metadata)
+    if DRYRUN:
+        print("DRYRUN: skipping evict_pod step")
+    else:
+        v1.create_namespaced_pod_eviction(
+            name=pod.metadata.name,
+            namespace=pod.metadata.namespace,
+            body=eviction
+        )
     annotate_pod(pod)
 
 
